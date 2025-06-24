@@ -8,6 +8,7 @@ from typing import Dict
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
+from astrbot.core.message.components import At
 
 
 @register("feihualing", "auberginewly", "支持限时飞花令记分的 AstrBot 插件", "1.0.0")
@@ -76,6 +77,16 @@ class FeiHuaLingPlugin(Star):
             return f"group_{event.group_id}"
         else:
             return f"user_{event.get_sender_id()}"
+
+    def is_at_bot(self, event: AstrMessageEvent) -> bool:
+        """检查消息是否艾特了机器人"""
+        messages = event.get_messages()
+        self_id = event.get_self_id()
+
+        for message in messages:
+            if isinstance(message, At) and str(message.qq) == str(self_id):
+                return True
+        return False
 
     def is_valid_poem(self, text: str) -> bool:
         """基础诗句有效性检查"""
@@ -186,7 +197,7 @@ class FeiHuaLingPlugin(Star):
                 f"🌸 飞花令游戏开始！🌸\n"
                 f"令字：【{target_char}】\n"
                 f"时间：{duration} 分钟\n"
-                f"请在群内回复包含令字『{target_char}』的诗句！\n"
+                f"请在群内发送包含令字『{target_char}』的诗句！\n"
                 f"每人每次只能回答一条诗句，每句得1分！"
             )
 
@@ -347,14 +358,25 @@ class FeiHuaLingPlugin(Star):
 
             # 检查诗句有效性
             if not self.is_valid_poem(poem_text):
-                # 静默忽略无效诗句，不给出提示，避免对正常聊天的干扰
+                # 如果是艾特机器人的消息，给出提示
+                if self.is_at_bot(event):
+                    yield event.plain_result(
+                        f"{user_name}，请发送符合格式的诗句！\n"
+                        f"要求：3-20个汉字，包含令字『{game['target_char']}』\n"
+                        f"示例：春江花月夜"
+                    )
                 return
 
             # 检查是否包含令字
             if not self.contains_target_char(poem_text, game["target_char"]):
-                yield event.plain_result(
-                    f"{user_name}，诗句中不含令字『{game['target_char']}』！"
-                )
+                # 如果是艾特机器人的消息或明显是诗句，给出提示
+                if (
+                    self.is_at_bot(event)
+                    or len(re.sub(r"[^\u4e00-\u9fff]", "", poem_text)) >= 5
+                ):
+                    yield event.plain_result(
+                        f"{user_name}，诗句中不含令字『{game['target_char']}』！"
+                    )
                 return
 
             # 检查诗句是否重复（仅检查本轮）
@@ -486,7 +508,7 @@ class FeiHuaLingPlugin(Star):
 /feihualing_help - 显示此帮助
 
 🎯 游戏规则：
-1. 回复包含令字的诗句即可得分
+1. 直接发送包含令字的诗句即可得分
 2. 每人每次只能回答一条诗句
 3. 同一局内不能重复使用诗句
 4. 每局结束后重新开始，可重复之前用过的诗句
@@ -497,7 +519,7 @@ class FeiHuaLingPlugin(Star):
 - 必须包含指定令字
 - 单局内不能重复使用诗句
 - 不同群/用户的积分分别统计
-- 游戏进行中，普通聊天不会被识别为诗句
+- 艾特机器人可获得无效输入提示
 """
             yield event.plain_result(help_text)
 
