@@ -24,7 +24,6 @@ class FeiHuaLingPlugin(Star):
         # 数据存储路径
         self.data_dir = os.path.join("data", "feihualing")
         self.scores_file = os.path.join(self.data_dir, "scores.json")
-        self.used_poems_file = os.path.join(self.data_dir, "used_poems.json")
         self.last_game_file = os.path.join(self.data_dir, "last_game.json")
 
         # 确保数据目录存在
@@ -47,13 +46,6 @@ class FeiHuaLingPlugin(Star):
             else:
                 self.all_scores = {}
 
-            # 加载已使用诗句数据
-            if os.path.exists(self.used_poems_file):
-                with open(self.used_poems_file, "r", encoding="utf-8") as f:
-                    self.all_used_poems = json.load(f)
-            else:
-                self.all_used_poems = {}
-
             # 加载最近一局游戏数据
             if os.path.exists(self.last_game_file):
                 with open(self.last_game_file, "r", encoding="utf-8") as f:
@@ -64,7 +56,6 @@ class FeiHuaLingPlugin(Star):
         except Exception as e:
             logger.error(f"加载飞花令数据失败: {e}")
             self.all_scores = {}
-            self.all_used_poems = {}
             self.last_games = {}
 
     def save_data(self):
@@ -72,9 +63,6 @@ class FeiHuaLingPlugin(Star):
         try:
             with open(self.scores_file, "w", encoding="utf-8") as f:
                 json.dump(self.all_scores, f, ensure_ascii=False, indent=2)
-
-            with open(self.used_poems_file, "w", encoding="utf-8") as f:
-                json.dump(self.all_used_poems, f, ensure_ascii=False, indent=2)
 
             with open(self.last_game_file, "w", encoding="utf-8") as f:
                 json.dump(self.last_games, f, ensure_ascii=False, indent=2)
@@ -161,6 +149,7 @@ class FeiHuaLingPlugin(Star):
                 "participants": {},  # {user_id: score}
                 "used_poems": set(),  # 本轮已使用的诗句
                 "is_active": True,
+                "end_message": None,  # 游戏结束消息
             }
 
             # 启动游戏定时器
@@ -193,9 +182,12 @@ class FeiHuaLingPlugin(Star):
             if session_id in self.games:
                 result_message = await self.end_game(session_id)
                 if result_message:
-                    # 这里需要发送消息到对应的聊天环境
-                    # 由于 AstrBot 的限制，我们在这里记录日志，实际消息会在下次交互时显示
-                    logger.info(f"游戏结束消息: {result_message}")
+                    # 将结束消息保存到游戏状态中，等待下次用户交互时发送
+                    if session_id in self.games:
+                        self.games[session_id]["end_message"] = result_message
+                    else:
+                        # 如果游戏已被清理，记录日志
+                        logger.info(f"游戏结束消息: {result_message}")
 
         except Exception as e:
             logger.error(f"游戏计时器异常: {e}")
@@ -229,10 +221,10 @@ class FeiHuaLingPlugin(Star):
                     self.all_scores[session_id][user_id] = 0
                 self.all_scores[session_id][user_id] += score
 
-            # 保存已使用的诗句到全局记录
-            if session_id not in self.all_used_poems:
-                self.all_used_poems[session_id] = []
-            self.all_used_poems[session_id].extend(list(game["used_poems"]))
+            # 保存已使用的诗句到全局记录 - 移除这部分，改为只在本局内检测
+            # if session_id not in self.all_used_poems:
+            #     self.all_used_poems[session_id] = []
+            # self.all_used_poems[session_id].extend(list(game["used_poems"]))
 
             # 保存数据
             self.save_data()
@@ -267,8 +259,8 @@ class FeiHuaLingPlugin(Star):
             else:
                 result_message += "😔 本轮无人参与，下次加油！"
 
-            # 清理游戏状态
-            del self.games[session_id]
+            # 不立即清理游戏状态，保留结束消息
+            # del self.games[session_id]
 
             return result_message
 
@@ -284,6 +276,13 @@ class FeiHuaLingPlugin(Star):
         try:
             session_id = self.get_session_id(event)
 
+            # 检查是否有待发送的结束消息
+            if session_id in self.games and self.games[session_id].get("end_message"):
+                end_message = self.games[session_id]["end_message"]
+                del self.games[session_id]  # 清理游戏状态
+                yield event.plain_result(end_message)
+                return
+
             # 检查是否有正在进行的游戏
             if session_id not in self.games:
                 return
@@ -296,6 +295,7 @@ class FeiHuaLingPlugin(Star):
             if datetime.now() >= game["end_time"]:
                 result_message = await self.end_game(session_id)
                 if result_message:
+                    del self.games[session_id]  # 清理游戏状态
                     yield event.plain_result(result_message)
                 return
 
@@ -319,7 +319,7 @@ class FeiHuaLingPlugin(Star):
                 )
                 return
 
-            # 检查诗句是否重复（本轮 + 历史）
+            # 检查诗句是否重复（仅检查本轮）
             cleaned_poem = re.sub(r"[^\u4e00-\u9fff]", "", poem_text)
 
             # 检查本轮是否已使用
@@ -327,13 +327,13 @@ class FeiHuaLingPlugin(Star):
                 yield event.plain_result(f"{user_name}，该诗句本轮已被使用过！")
                 return
 
-            # 检查历史是否已使用
-            session_history = self.all_used_poems.get(session_id, [])
-            if cleaned_poem in session_history:
-                yield event.plain_result(
-                    f"{user_name}，该诗句在之前的游戏中已被使用过！"
-                )
-                return
+            # 移除历史重复检测 - 只在本局内检测重复
+            # session_history = self.all_used_poems.get(session_id, [])
+            # if cleaned_poem in session_history:
+            #     yield event.plain_result(
+            #         f"{user_name}，该诗句在之前的游戏中已被使用过！"
+            #     )
+            #     return
 
             # 添加诗句到已使用列表
             game["used_poems"].add(cleaned_poem)
@@ -408,8 +408,11 @@ class FeiHuaLingPlugin(Star):
 
             result_message = await self.end_game(session_id)
             if result_message:
+                del self.games[session_id]  # 清理游戏状态
                 yield event.plain_result(result_message)
             else:
+                if session_id in self.games:
+                    del self.games[session_id]
                 yield event.plain_result("飞花令游戏已强制结束！")
 
         except Exception as e:
@@ -434,13 +437,14 @@ class FeiHuaLingPlugin(Star):
 🎯 游戏规则：
 1. 回复包含令字的诗句即可得分
 2. 每人每次只能回答一条诗句
-3. 重复的诗句无法得分
-4. 时间结束后自动公布结果
+3. 同一局内不能重复使用诗句
+4. 每局结束后重新开始，可重复之前用过的诗句
+5. 时间结束后自动公布结果
 
 ⚠️ 注意事项：
 - 诗句长度3-20字
 - 必须包含指定令字
-- 不能重复使用诗句
+- 单局内不能重复使用诗句
 - 不同群/用户的积分分别统计
 """
         yield event.plain_result(help_text)
