@@ -13,6 +13,8 @@
 - 🎯 **智能检测** - 自动验证诗句是否包含指定令字
 - 🚫 **重复检测** - 防止同一首诗句被重复使用
 - 📊 **积分系统** - 每句诗得1分，实时反馈，累积排行
+- 🏆 **会话隔离** - 不同群聊/私聊的积分和排名完全独立
+- 📋 **局历史** - 可查看最近一局的详细排名和游戏数据
 - 💾 **数据持久化** - 积分和诗句历史自动保存
 - 🎨 **用户友好** - 清晰的游戏提示和错误处理
 - 🔧 **易于部署** - 完全符合AstrBot插件规范
@@ -69,7 +71,12 @@ git clone https://github.com/auberginewly/astrbot_plugin_feihualing.git
 /feihualing_score
 ```
 
-#### 5. 强制结束游戏
+#### 5. 查看最近一局排名
+```
+/feihualing_last
+```
+
+#### 6. 强制结束游戏
 ```
 /feihualing_stop
 ```
@@ -96,14 +103,21 @@ git clone https://github.com/auberginewly/astrbot_plugin_feihualing.git
 |------|------|------|
 | `/feihualing <时间> <令字>` | 开始飞花令游戏 | `/feihualing 2 月` |
 | `/feihualing_help` | 显示帮助信息 | `/feihualing_help` |
-| `/feihualing_score` | 查看积分榜 | `/feihualing_score` |
+| `/feihualing_score` | 查看总积分榜（当前会话） | `/feihualing_score` |
+| `/feihualing_last` | 查看最近一局详细排名 | `/feihualing_last` |
 | `/feihualing_stop` | 强制结束当前游戏 | `/feihualing_stop` |
 
 ## ⚙️ 配置说明
 
 插件数据存储在 `data/feihualing/` 目录下：
-- `scores.json` - 积分数据
-- `used_poems.json` - 已使用诗句记录
+- `scores.json` - 总积分数据（按会话分类）
+- `used_poems.json` - 已使用诗句记录（按会话分类）
+- `last_game.json` - 最近一局游戏详情（按会话分类）
+
+**数据结构特点：**
+- 所有数据按会话ID（群聊/私聊）独立存储
+- 不同群聊之间的积分和诗句库完全隔离
+- 每局游戏结束后会保存详细的游戏记录
 
 ## 🛠️ 开发者信息
 

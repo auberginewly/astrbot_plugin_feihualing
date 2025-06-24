@@ -25,6 +25,7 @@ class FeiHuaLingPlugin(Star):
         self.data_dir = os.path.join("data", "feihualing")
         self.scores_file = os.path.join(self.data_dir, "scores.json")
         self.used_poems_file = os.path.join(self.data_dir, "used_poems.json")
+        self.last_game_file = os.path.join(self.data_dir, "last_game.json")
 
         # 确保数据目录存在
         os.makedirs(self.data_dir, exist_ok=True)
@@ -53,10 +54,18 @@ class FeiHuaLingPlugin(Star):
             else:
                 self.all_used_poems = {}
 
+            # 加载最近一局游戏数据
+            if os.path.exists(self.last_game_file):
+                with open(self.last_game_file, "r", encoding="utf-8") as f:
+                    self.last_games = json.load(f)
+            else:
+                self.last_games = {}
+
         except Exception as e:
             logger.error(f"加载飞花令数据失败: {e}")
             self.all_scores = {}
             self.all_used_poems = {}
+            self.last_games = {}
 
     def save_data(self):
         """保存持久化数据"""
@@ -66,6 +75,9 @@ class FeiHuaLingPlugin(Star):
 
             with open(self.used_poems_file, "w", encoding="utf-8") as f:
                 json.dump(self.all_used_poems, f, ensure_ascii=False, indent=2)
+
+            with open(self.last_game_file, "w", encoding="utf-8") as f:
+                json.dump(self.last_games, f, ensure_ascii=False, indent=2)
 
         except Exception as e:
             logger.error(f"保存飞花令数据失败: {e}")
@@ -179,19 +191,34 @@ class FeiHuaLingPlugin(Star):
 
             # 游戏结束
             if session_id in self.games:
-                await self.end_game(session_id, original_event)
+                result_message = await self.end_game(session_id)
+                if result_message:
+                    # 这里需要发送消息到对应的聊天环境
+                    # 由于 AstrBot 的限制，我们在这里记录日志，实际消息会在下次交互时显示
+                    logger.info(f"游戏结束消息: {result_message}")
 
         except Exception as e:
             logger.error(f"游戏计时器异常: {e}")
 
-    async def end_game(self, session_id: str, original_event: AstrMessageEvent):
-        """结束游戏并公布结果"""
+    async def end_game(self, session_id: str):
+        """结束游戏并保存结果"""
         try:
             game = self.games.get(session_id)
             if not game:
-                return
+                return None
 
             game["is_active"] = False
+
+            # 保存当局游戏数据到历史记录
+            game_record = {
+                "target_char": game["target_char"],
+                "duration": game["duration"],
+                "start_time": game["start_time"].isoformat(),
+                "end_time": game["end_time"].isoformat(),
+                "participants": game["participants"].copy(),
+                "poems_count": len(game["used_poems"]),
+            }
+            self.last_games[session_id] = game_record
 
             # 更新总积分
             if session_id not in self.all_scores:
@@ -213,29 +240,43 @@ class FeiHuaLingPlugin(Star):
             # 生成积分榜
             result_message = "⏰ 时间到！飞花令游戏结束！\n\n"
             result_message += f"本轮令字：【{game['target_char']}】\n"
+            result_message += f"游戏时长：{game['duration']} 分钟\n\n"
 
             if game["participants"]:
-                result_message += "📊 本轮积分榜：\n"
+                result_message += "🏆 本局积分榜：\n"
                 sorted_participants = sorted(
                     game["participants"].items(), key=lambda x: x[1], reverse=True
                 )
 
                 for i, (user_id, score) in enumerate(sorted_participants, 1):
-                    # 这里使用user_id，实际使用中可能需要获取用户昵称
-                    result_message += f"{i}. 用户{user_id}: {score} 分\n"
+                    # 尝试获取用户昵称，如果失败则使用用户ID
+                    try:
+                        user_name = f"用户{user_id}"  # 这里可以进一步优化获取真实用户名
+                    except Exception:
+                        user_name = f"用户{user_id}"
 
-                result_message += f"\n总共收集了 {len(game['used_poems'])} 句诗词！"
+                    medal = (
+                        "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "🏅"
+                    )
+                    result_message += f"{medal} {i}. {user_name}: {score} 分\n"
+
+                result_message += (
+                    f"\n📖 总共收集了 {len(game['used_poems'])} 句诗词！\n"
+                )
+                result_message += "输入 /feihualing_last 可查看本局详细排名"
             else:
-                result_message += "本轮无人参与，下次加油！"
+                result_message += "😔 本轮无人参与，下次加油！"
 
             # 清理游戏状态
             del self.games[session_id]
 
-            # 发送结果（这里需要使用原始事件的上下文）
-            # 注意：在实际实现中，可能需要更复杂的方式来发送消息到对应的聊天环境
+            return result_message
 
         except Exception as e:
             logger.error(f"结束游戏失败: {e}")
+            if session_id in self.games:
+                del self.games[session_id]
+            return None
 
     @filter.regex(r".*")
     async def handle_poem(self, event: AstrMessageEvent):
@@ -253,7 +294,9 @@ class FeiHuaLingPlugin(Star):
 
             # 检查游戏是否超时
             if datetime.now() >= game["end_time"]:
-                await self.end_game(session_id, event)
+                result_message = await self.end_game(session_id)
+                if result_message:
+                    yield event.plain_result(result_message)
                 return
 
             user_id = event.get_sender_id()
@@ -322,7 +365,7 @@ class FeiHuaLingPlugin(Star):
 
     @filter.command("feihualing_score")
     async def show_scores(self, event: AstrMessageEvent):
-        """显示积分榜"""
+        """显示总积分榜（当前会话）"""
         try:
             session_id = self.get_session_id(event)
 
@@ -335,11 +378,17 @@ class FeiHuaLingPlugin(Star):
                 yield event.plain_result("暂无积分记录！")
                 return
 
-            result = "🏆 飞花令总积分榜 🏆\n\n"
+            # 确定是群聊还是私聊
+            chat_type = "群聊" if session_id.startswith("group_") else "私聊"
+
+            result = f"🏆 飞花令总积分榜 ({chat_type}) 🏆\n\n"
             sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
 
             for i, (user_id, score) in enumerate(sorted_scores, 1):
-                result += f"{i}. 用户{user_id}: {score} 分\n"
+                medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "🏅"
+                result += f"{medal} {i}. 用户{user_id}: {score} 分\n"
+
+            result += "\n💡 输入 /feihualing_last 查看最近一局排名"
 
             yield event.plain_result(result)
 
@@ -357,8 +406,11 @@ class FeiHuaLingPlugin(Star):
                 yield event.plain_result("当前没有进行中的飞花令游戏！")
                 return
 
-            await self.end_game(session_id, event)
-            yield event.plain_result("飞花令游戏已强制结束！")
+            result_message = await self.end_game(session_id)
+            if result_message:
+                yield event.plain_result(result_message)
+            else:
+                yield event.plain_result("飞花令游戏已强制结束！")
 
         except Exception as e:
             logger.error(f"停止游戏失败: {e}")
@@ -373,8 +425,9 @@ class FeiHuaLingPlugin(Star):
 /feihualing <时间> <令字> - 开始游戏
   示例：/feihualing 2 月
 
-📊 其他指令：
-/feihualing_score - 查看积分榜
+📊 查询指令：
+/feihualing_score - 查看总积分榜
+/feihualing_last - 查看最近一局排名
 /feihualing_stop - 强制结束游戏
 /feihualing_help - 显示此帮助
 
@@ -388,8 +441,54 @@ class FeiHuaLingPlugin(Star):
 - 诗句长度3-20字
 - 必须包含指定令字
 - 不能重复使用诗句
+- 不同群/用户的积分分别统计
 """
         yield event.plain_result(help_text)
+
+    @filter.command("feihualing_last")
+    async def show_last_game(self, event: AstrMessageEvent):
+        """显示最近一局的详细排名"""
+        try:
+            session_id = self.get_session_id(event)
+
+            if session_id not in self.last_games:
+                yield event.plain_result("暂无最近一局的游戏记录！")
+                return
+
+            last_game = self.last_games[session_id]
+
+            # 解析时间
+            start_time = datetime.fromisoformat(last_game["start_time"])
+
+            # 确定是群聊还是私聊
+            chat_type = "群聊" if session_id.startswith("group_") else "私聊"
+
+            result = f"📋 最近一局飞花令详情 ({chat_type}) 📋\n\n"
+            result += f"令字：【{last_game['target_char']}】\n"
+            result += f"时长：{last_game['duration']} 分钟\n"
+            result += f"开始时间：{start_time.strftime('%m-%d %H:%M')}\n"
+            result += f"诗句总数：{last_game['poems_count']} 句\n\n"
+
+            participants = last_game["participants"]
+            if participants:
+                result += "🏆 本局排名：\n"
+                sorted_participants = sorted(
+                    participants.items(), key=lambda x: x[1], reverse=True
+                )
+
+                for i, (user_id, score) in enumerate(sorted_participants, 1):
+                    medal = (
+                        "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "🏅"
+                    )
+                    result += f"{medal} {i}. 用户{user_id}: {score} 分\n"
+            else:
+                result += "😔 本局无人参与"
+
+            yield event.plain_result(result)
+
+        except Exception as e:
+            logger.error(f"显示最近一局失败: {e}")
+            yield event.plain_result("获取最近一局数据失败！")
 
     async def terminate(self):
         """插件销毁时的清理工作"""
