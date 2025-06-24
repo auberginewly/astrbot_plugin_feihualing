@@ -93,6 +93,33 @@ class FeiHuaLingPlugin(Star):
         if not re.match(r"^[\u4e00-\u9fff]+$", cleaned_text):
             return False
 
+        # 排除明显不是诗句的内容
+        # 1. 排除纯数字组合
+        if re.match(r"^[一二三四五六七八九十百千万零]+$", cleaned_text):
+            return False
+
+        # 2. 排除太多重复字符
+        if len(set(cleaned_text)) < max(1, len(cleaned_text) // 3):
+            return False
+
+        # 3. 排除常见的非诗句短语
+        non_poem_phrases = [
+            "哈哈哈",
+            "呵呵呵",
+            "嘿嘿嘿",
+            "好的好的",
+            "知道了",
+            "明白了",
+            "收到收到",
+            "没问题",
+            "可以的",
+            "谢谢谢",
+            "不客气",
+            "再见再见",
+        ]
+        if cleaned_text in non_poem_phrases:
+            return False
+
         return True
 
     def contains_target_char(self, text: str, target_char: str) -> bool:
@@ -176,18 +203,18 @@ class FeiHuaLingPlugin(Star):
 
             # 等待游戏结束时间
             while datetime.now() < game["end_time"] and game["is_active"]:
-                await asyncio.sleep(10)  # 每10秒检查一次，减少CPU占用
+                await asyncio.sleep(5)  # 每5秒检查一次，提高响应速度
 
-            # 游戏结束
-            if session_id in self.games:
+            # 游戏结束 - 直接生成并保存结束消息，标记游戏为待结束状态
+            if session_id in self.games and self.games[session_id]["is_active"]:
                 result_message = await self.end_game(session_id)
                 if result_message:
-                    # 将结束消息保存到游戏状态中，等待下次用户交互时发送
-                    if session_id in self.games:
-                        self.games[session_id]["end_message"] = result_message
-                    else:
-                        # 如果游戏已被清理，记录日志
-                        logger.info(f"游戏结束消息: {result_message}")
+                    # 标记游戏已结束，等待发送消息
+                    self.games[session_id] = {
+                        "is_active": False,
+                        "end_message": result_message,
+                        "end_time_reached": True,
+                    }
 
         except Exception as e:
             logger.error(f"游戏计时器异常: {e}")
@@ -276,11 +303,18 @@ class FeiHuaLingPlugin(Star):
         try:
             session_id = self.get_session_id(event)
 
-            # 检查是否有待发送的结束消息
-            if session_id in self.games and self.games[session_id].get("end_message"):
-                end_message = self.games[session_id]["end_message"]
-                del self.games[session_id]  # 清理游戏状态
-                yield event.plain_result(end_message)
+            # 优先检查是否有待发送的结束消息
+            if session_id in self.games:
+                game = self.games[session_id]
+                if not game.get("is_active", True) and game.get("end_message"):
+                    end_message = game["end_message"]
+                    del self.games[session_id]  # 清理游戏状态
+                    yield event.plain_result(end_message)
+                    return
+
+            # 跳过所有命令消息（必须在游戏检查之前）
+            message_text = event.message_str.strip()
+            if message_text.startswith("/"):
                 return
 
             # 检查是否有正在进行的游戏
@@ -288,7 +322,7 @@ class FeiHuaLingPlugin(Star):
                 return
 
             game = self.games[session_id]
-            if not game["is_active"]:
+            if not game.get("is_active", False):
                 return
 
             # 检查游戏是否超时
@@ -301,15 +335,19 @@ class FeiHuaLingPlugin(Star):
 
             user_id = event.get_sender_id()
             user_name = event.get_sender_name()
-            poem_text = event.message_str.strip()
+            poem_text = message_text
 
-            # 跳过命令消息
-            if poem_text.startswith("/"):
+            # 再次检查是否是命令（防止意外处理）
+            if (
+                poem_text.startswith("/")
+                or poem_text.startswith("!")
+                or poem_text.startswith("#")
+            ):
                 return
 
             # 检查诗句有效性
             if not self.is_valid_poem(poem_text):
-                yield event.plain_result(f"{user_name}，请回复正确的诗句格式！")
+                # 静默忽略无效诗句，不给出提示，避免对正常聊天的干扰
                 return
 
             # 检查是否包含令字
@@ -326,14 +364,6 @@ class FeiHuaLingPlugin(Star):
             if cleaned_poem in game["used_poems"]:
                 yield event.plain_result(f"{user_name}，该诗句本轮已被使用过！")
                 return
-
-            # 移除历史重复检测 - 只在本局内检测重复
-            # session_history = self.all_used_poems.get(session_id, [])
-            # if cleaned_poem in session_history:
-            #     yield event.plain_result(
-            #         f"{user_name}，该诗句在之前的游戏中已被使用过！"
-            #     )
-            #     return
 
             # 添加诗句到已使用列表
             game["used_poems"].add(cleaned_poem)
@@ -368,6 +398,15 @@ class FeiHuaLingPlugin(Star):
         """显示总积分榜（当前会话）"""
         try:
             session_id = self.get_session_id(event)
+
+            # 检查是否有待发送的结束消息
+            if session_id in self.games:
+                game = self.games[session_id]
+                if not game.get("is_active", True) and game.get("end_message"):
+                    end_message = game["end_message"]
+                    del self.games[session_id]  # 清理游戏状态
+                    yield event.plain_result(end_message)
+                    return
 
             if session_id not in self.all_scores:
                 yield event.plain_result("暂无积分记录！")
@@ -422,7 +461,19 @@ class FeiHuaLingPlugin(Star):
     @filter.command("feihualing_help")
     async def show_help(self, event: AstrMessageEvent):
         """显示帮助信息"""
-        help_text = """🌸 飞花令插件帮助 🌸
+        try:
+            session_id = self.get_session_id(event)
+
+            # 检查是否有待发送的结束消息
+            if session_id in self.games:
+                game = self.games[session_id]
+                if not game.get("is_active", True) and game.get("end_message"):
+                    end_message = game["end_message"]
+                    del self.games[session_id]  # 清理游戏状态
+                    yield event.plain_result(end_message)
+                    return
+
+            help_text = """🌸 飞花令插件帮助 🌸
 
 🎮 游戏指令：
 /feihualing <时间> <令字> - 开始游戏
@@ -446,14 +497,28 @@ class FeiHuaLingPlugin(Star):
 - 必须包含指定令字
 - 单局内不能重复使用诗句
 - 不同群/用户的积分分别统计
+- 游戏进行中，普通聊天不会被识别为诗句
 """
-        yield event.plain_result(help_text)
+            yield event.plain_result(help_text)
+
+        except Exception as e:
+            logger.error(f"显示帮助失败: {e}")
+            yield event.plain_result("显示帮助失败！")
 
     @filter.command("feihualing_last")
     async def show_last_game(self, event: AstrMessageEvent):
         """显示最近一局的详细排名"""
         try:
             session_id = self.get_session_id(event)
+
+            # 检查是否有待发送的结束消息
+            if session_id in self.games:
+                game = self.games[session_id]
+                if not game.get("is_active", True) and game.get("end_message"):
+                    end_message = game["end_message"]
+                    del self.games[session_id]  # 清理游戏状态
+                    yield event.plain_result(end_message)
+                    return
 
             if session_id not in self.last_games:
                 yield event.plain_result("暂无最近一局的游戏记录！")
