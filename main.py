@@ -89,79 +89,107 @@ class FeiHuaLingPlugin(Star):
         return False
 
     async def is_valid_poem(self, text: str) -> bool:
-        """使用 LLM API 检查诗句有效性"""
+        """使用 LLM API 智能检查诗句有效性"""
+        logger.info(f"🔍 开始智能检查诗句: '{text}'")
+        
         if not text:
+            logger.info("❌ 文本为空，返回False")
             return False
 
         # 去除标点符号和空格
         cleaned_text = re.sub(r"[^\u4e00-\u9fff]", "", text)
+        logger.info(f"🧹 清理后的文本: '{cleaned_text}'")
 
         # 基础检查：长度（一般诗句3-20字）
         if len(cleaned_text) < 3 or len(cleaned_text) > 20:
+            logger.info(f"❌ 文本长度不符合要求: {len(cleaned_text)} 字（需要3-20字）")
             return False
 
         # 基础检查：是否全是汉字
         if not re.match(r"^[\u4e00-\u9fff]+$", cleaned_text):
+            logger.info("❌ 文本不全是汉字")
             return False
 
         # 基础检查：排除明显不是诗句的内容
-        # 1. 排除纯数字组合
-        if re.match(r"^[一二三四五六七八九十百千万零]+$", cleaned_text):
-            return False
-
-        # 2. 排除太多重复字符
-        if len(set(cleaned_text)) < max(1, len(cleaned_text) // 3):
-            return False
-
-        # 3. 排除常见的非诗句短语
         non_poem_phrases = [
-            "哈哈哈",
-            "呵呵呵",
-            "嘿嘿嘿",
-            "好的好的",
-            "知道了",
-            "明白了",
-            "收到收到",
-            "没问题",
-            "可以的",
-            "谢谢谢",
-            "不客气",
-            "再见再见",
+            "哈哈哈", "呵呵呵", "嘿嘿嘿", "好的好的", "知道了", "明白了", 
+            "收到收到", "没问题", "可以的", "谢谢谢", "不客气", "再见再见",
+            "什么意思", "怎么办", "不知道", "随便吧", "算了吧", "没关系"
         ]
-        if cleaned_text in non_poem_phrases:
+        
+        # 排除纯数字组合
+        if re.match(r"^[一二三四五六七八九十百千万零]+$", cleaned_text):
+            logger.info("❌ 文本是纯数字组合")
             return False
+
+        # 排除重复字符过多的文本
+        if len(set(cleaned_text)) < max(1, len(cleaned_text) // 3):
+            logger.info("❌ 文本重复字符太多")
+            return False
+            
+        # 排除常见非诗句短语
+        if cleaned_text in non_poem_phrases:
+            logger.info(f"❌ 文本在非诗句排除列表中: {cleaned_text}")
+            return False
+
+        logger.info("✅ 通过基础检查，开始LLM智能判断")
 
         # 使用 LLM API 进行古诗判断
         try:
             provider = self.ctx.get_using_provider()
             if not provider:
-                logger.warning("未找到可用的 LLM Provider，使用基础检查")
-                return True  # 如果没有 LLM，则认为通过了基础检查的文本是有效的
+                logger.warning("⚠️ 未配置 LLM Provider！")
+                logger.warning("💡 请在 AstrBot 设置中配置 LLM Provider 以启用智能古诗检测")
+                logger.warning("🔄 当前使用基础规则检测（准确度较低）")
+                return True  # 基础检查通过则认为有效
 
-            # 构造提示词让 LLM 判断是否为古诗词
-            prompt = f"""请判断以下文本是否为古诗词句子："{text}"
+            logger.info(f"🤖 找到LLM Provider: {provider.__class__.__name__}")
 
-要求：
-1. 如果是古诗词句子（包括古诗、宋词、元曲等传统诗词），请回答"是"
-2. 如果不是古诗词句子（如日常对话、现代文等），请回答"否"
-3. 只需回答"是"或"否"，不需要其他解释
+            # 构造更详细的提示词
+            prompt = f"""请判断以下文本是否为中国古典诗词："{text}"
 
+判断标准：
+1. 是古典诗词（古诗、宋词、元曲、近体诗等）→ 回答"是"
+2. 是现代诗歌、流行歌词、日常对话等 → 回答"否"
+3. 只需回答"是"或"否"，无需解释
+
+文本：{text}
 回答："""
 
+            logger.info("🚀 开始调用LLM API...")
             # 调用 LLM API
             response = await provider.text_chat(prompt=prompt)
+            logger.info("✅ LLM API调用完成")
 
             if response and response.completion_text:
                 result = response.completion_text.strip()
-                logger.info(f"LLM 判断诗句 '{text}' 结果: {result}")
-                return "是" in result or "Yes" in result.upper()
+                logger.info(f"🎯 LLM判断结果: '{result}'")
+                
+                # 更灵活的结果解析
+                result_lower = result.lower()
+                is_poem = (
+                    "是" in result or 
+                    "yes" in result_lower or 
+                    "true" in result_lower or
+                    "古诗" in result or
+                    "诗词" in result
+                )
+                
+                if is_poem:
+                    logger.info(f"✅ LLM确认: '{text}' 是古诗词")
+                else:
+                    logger.info(f"❌ LLM判断: '{text}' 不是古诗词")
+                    
+                return is_poem
             else:
-                logger.warning("LLM 响应为空，使用基础检查")
+                logger.warning("⚠️ LLM响应为空，回退到基础检查")
                 return True
 
         except Exception as e:
-            logger.error(f"调用 LLM 判断诗句失败: {e}")
-            # LLM 调用失败时，使用基础检查结果
+            logger.error(f"❌ LLM调用失败: {e}")
+            import traceback
+            logger.error(f"错误详情: {traceback.format_exc()}")
+            logger.warning("🔄 LLM失败，回退到基础检查结果")
             return True
 
     def contains_target_char(self, text: str, target_char: str) -> bool:
@@ -387,45 +415,64 @@ class FeiHuaLingPlugin(Star):
             ):
                 return
 
-            # 检查诗句有效性
+            # 检查诗句有效性（使用 LLM 智能判断）
+            logger.info(f"📝 用户 {user_name} 提交诗句: '{poem_text}'")
             is_valid = await self.is_valid_poem(poem_text)
+            
             if not is_valid:
+                logger.info(f"❌ 诗句未通过验证: '{poem_text}'")
                 # 如果是艾特机器人的消息，给出提示
                 if self.is_at_bot(event):
                     yield event.plain_result(
-                        f"{user_name}，请发送符合格式的诗句！\n"
-                        f"要求：3-20个汉字，包含令字『{game['target_char']}』\n"
-                        f"示例：春江花月夜"
+                        f"❌ {user_name}，请发送符合格式的古诗词！\n"
+                        f"📋 要求：3-20个汉字的古典诗词句子\n"
+                        f"🎯 必须包含令字『{game['target_char']}』\n"
+                        f"💡 示例：春江花月夜、明月松间照"
                     )
                 return
+            
+            logger.info(f"✅ 诗句通过LLM验证: '{poem_text}'")
 
             # 检查是否包含令字
             if not self.contains_target_char(poem_text, game["target_char"]):
+                logger.info(f"❌ 诗句不含令字 '{game['target_char']}': '{poem_text}'")
                 # 如果是艾特机器人的消息或明显是诗句，给出提示
                 if (
                     self.is_at_bot(event)
                     or len(re.sub(r"[^\u4e00-\u9fff]", "", poem_text)) >= 5
                 ):
                     yield event.plain_result(
-                        f"{user_name}，诗句中不含令字『{game['target_char']}』！"
+                        f"❌ {user_name}，诗句中不含令字『{game['target_char']}』！\n"
+                        f"📝 你的诗句：{poem_text}\n"
+                        f"💡 请重新发送包含令字的古诗词"
                     )
                 return
+            
+            logger.info(f"✅ 诗句包含令字 '{game['target_char']}': '{poem_text}'")
 
             # 检查诗句是否重复（仅检查本轮）
             cleaned_poem = re.sub(r"[^\u4e00-\u9fff]", "", poem_text)
 
             # 检查本轮是否已使用
             if cleaned_poem in game["used_poems"]:
-                yield event.plain_result(f"{user_name}，该诗句本轮已被使用过！")
+                logger.info(f"❌ 诗句重复: '{cleaned_poem}'")
+                yield event.plain_result(
+                    f"❌ {user_name}，该诗句本轮已被使用过！\n"
+                    f"📝 重复诗句：{poem_text}\n"
+                    f"💡 请发送其他古诗词"
+                )
                 return
 
             # 添加诗句到已使用列表
             game["used_poems"].add(cleaned_poem)
+            logger.info(f"📚 新增诗句到已使用列表: '{cleaned_poem}'")
 
             # 更新玩家得分
             if user_id not in game["participants"]:
                 game["participants"][user_id] = 0
             game["participants"][user_id] += 1
+            
+            logger.info(f"🎯 {user_name} 得分！当前分数: {game['participants'][user_id]}")
 
             # 计算剩余时间
             remaining_time = game["end_time"] - datetime.now()
@@ -439,9 +486,10 @@ class FeiHuaLingPlugin(Star):
             )
 
             yield event.plain_result(
-                f"✅ {user_name} 得 1 分！\n"
-                f"当前得分：{game['participants'][user_id]} 分\n"
-                f"剩余时间：{time_str}"
+                f"🎉 {user_name} 得 1 分！\n"
+                f"📝 诗句：{poem_text}\n"
+                f"🏆 当前得分：{game['participants'][user_id]} 分\n"
+                f"⏰ 剩余时间：{time_str}"
             )
 
         except Exception as e:
