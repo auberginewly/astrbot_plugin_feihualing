@@ -11,7 +11,7 @@ from astrbot.api import logger
 from astrbot.core.message.components import At
 
 
-@register("feihualing", "auberginewly", "支持限时飞花令记分的 AstrBot 插件", "1.0.0")
+@register("feihualing", "auberginewly", "支持限时飞花令记分的 AstrBot 插件", "1.1.0")
 class FeiHuaLingPlugin(Star):
     """飞花令插件
 
@@ -88,23 +88,23 @@ class FeiHuaLingPlugin(Star):
                 return True
         return False
 
-    def is_valid_poem(self, text: str) -> bool:
-        """基础诗句有效性检查"""
+    async def is_valid_poem(self, text: str) -> bool:
+        """使用 LLM API 检查诗句有效性"""
         if not text:
             return False
 
         # 去除标点符号和空格
         cleaned_text = re.sub(r"[^\u4e00-\u9fff]", "", text)
 
-        # 检查长度（一般诗句3-20字）
+        # 基础检查：长度（一般诗句3-20字）
         if len(cleaned_text) < 3 or len(cleaned_text) > 20:
             return False
 
-        # 检查是否全是汉字
+        # 基础检查：是否全是汉字
         if not re.match(r"^[\u4e00-\u9fff]+$", cleaned_text):
             return False
 
-        # 排除明显不是诗句的内容
+        # 基础检查：排除明显不是诗句的内容
         # 1. 排除纯数字组合
         if re.match(r"^[一二三四五六七八九十百千万零]+$", cleaned_text):
             return False
@@ -131,7 +131,38 @@ class FeiHuaLingPlugin(Star):
         if cleaned_text in non_poem_phrases:
             return False
 
-        return True
+        # 使用 LLM API 进行古诗判断
+        try:
+            provider = self.ctx.get_using_provider()
+            if not provider:
+                logger.warning("未找到可用的 LLM Provider，使用基础检查")
+                return True  # 如果没有 LLM，则认为通过了基础检查的文本是有效的
+
+            # 构造提示词让 LLM 判断是否为古诗词
+            prompt = f"""请判断以下文本是否为古诗词句子："{text}"
+
+要求：
+1. 如果是古诗词句子（包括古诗、宋词、元曲等传统诗词），请回答"是"
+2. 如果不是古诗词句子（如日常对话、现代文等），请回答"否"
+3. 只需回答"是"或"否"，不需要其他解释
+
+回答："""
+
+            # 调用 LLM API
+            response = await provider.text_chat(prompt=prompt)
+
+            if response and response.completion_text:
+                result = response.completion_text.strip()
+                logger.info(f"LLM 判断诗句 '{text}' 结果: {result}")
+                return "是" in result or "Yes" in result.upper()
+            else:
+                logger.warning("LLM 响应为空，使用基础检查")
+                return True
+
+        except Exception as e:
+            logger.error(f"调用 LLM 判断诗句失败: {e}")
+            # LLM 调用失败时，使用基础检查结果
+            return True
 
     def contains_target_char(self, text: str, target_char: str) -> bool:
         """检查文本中是否包含指定令字"""
@@ -357,7 +388,8 @@ class FeiHuaLingPlugin(Star):
                 return
 
             # 检查诗句有效性
-            if not self.is_valid_poem(poem_text):
+            is_valid = await self.is_valid_poem(poem_text)
+            if not is_valid:
                 # 如果是艾特机器人的消息，给出提示
                 if self.is_at_bot(event):
                     yield event.plain_result(
