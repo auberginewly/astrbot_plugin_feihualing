@@ -110,6 +110,34 @@ git clone https://github.com/auberginewly/astrbot_plugin_feihualing.git
 
 ## ⚙️ 配置说明
 
+### 🤖 LLM 智能检测配置
+
+**重要：** 本插件使用 LLM API 进行智能古诗词检测，需要在 AstrBot 中配置 LLM Provider。
+
+#### 支持的 LLM Provider：
+- 🇨🇳 **智谱AI (glm-4-flash)** - 推荐，响应快，准确度高
+- 🌐 **OpenAI (gpt-3.5-turbo/gpt-4)** - 经典选择，稳定可靠  
+- 🇨🇳 **阿里通义千问 (qwen-turbo)** - 国内服务，响应快
+- 🌐 **Google Gemini** - 免费额度大
+- 🌐 **Anthropic Claude** - 文学理解能力强
+- 🔧 **其他兼容 OpenAI API 的服务**
+
+#### 配置步骤：
+1. **访问 AstrBot 管理面板**：http://localhost:6185
+2. **进入 LLM 配置页面**：点击左侧菜单 `LLM 配置`
+3. **添加 Provider**：选择任意一个 LLM 服务商
+4. **设置为默认**：将添加的 Provider 设为默认
+5. **重启 AstrBot**：使配置生效
+
+#### 未配置 LLM 的影响：
+- ⚠️ 插件会显示警告信息
+- 🔄 自动回退到基础规则检测（准确度较低）
+- 💡 建议配置 LLM 以获得最佳体验
+
+详细配置教程：[LLM 配置指南](docs/llm-config.md)
+
+### 📁 数据存储
+
 插件数据存储在 `data/feihualing/` 目录下：
 - `scores.json` - 总积分数据（按会话分类）
 - `last_game.json` - 最近一局游戏详情（按会话分类）

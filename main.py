@@ -11,7 +11,7 @@ from astrbot.api import logger
 from astrbot.core.message.components import At
 
 
-@register("feihualing", "auberginewly", "支持限时飞花令记分的 AstrBot 插件", "1.1.0")
+@register("feihualing", "auberginewly", "支持LLM智能古诗检测的限时飞花令记分插件", "1.2.0")
 class FeiHuaLingPlugin(Star):
     """飞花令插件
 
